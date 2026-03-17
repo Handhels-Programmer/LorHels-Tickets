@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="do">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LorHels Tickets</title>
+    <!-- Carga de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    
+    <!-- Carga de Firebase SDK para Firestore, Auth y Logging -->
+    <script type="module">
+        // --- INICIO: Bloque de Configuración de Firebase (Actualizado) ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-app.js";
+        // Importamos Auth, incluyendo signInWithCustomToken
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, collection, query, addDoc, updateDoc, arrayUnion, deleteDoc } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
+        
+        // 0. Configuración Global de Firebase (USANDO VARIABLES DE LA PLATAFORMA)
+        
+        // RECOMENDACIÓN 1: Usar las variables de entorno de la plataforma en lugar de codificar la configuración.
+        const firebaseConfig = {
+            apiKey: "AIzaSyAsMBWgS9gFrbdOyYZO3vOZe2ZyPd7_7XY",
+            authDomain: "lorhels-tickets.firebaseapp.com",
+            projectId: "lorhels-tickets",
+            storageBucket: "lorhels-tickets.firebasestorage.app",
+            messagingSenderId: "530317618646",
+            appId: "1:530317618646:web:596696c08abaf851904877"
+        };
+
+        // RECOMENDACIÓN 2: Usar la variable de entorno __app_id
+        const appId = typeof __app_id !== 'undefined' ? __app_id : firebaseConfig.projectId;
+        
+        // Inicialización de Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        setLogLevel('debug'); // Ver logs de Firestore en la consola
+
+        // Variables globales para ser usadas en el script principal
+        window.db = db;
+        window.auth = auth;
+        window.appId = appId;
+        window.arrayUnion = arrayUnion; // Exponer arrayUnion
+        
+        // NUEVO: Exponer funciones de Auth al script principal
+        window.signInWithEmailAndPassword = signInWithEmailAndPassword;
+        window.signOut = signOut;
+        window.signInAnonymously = signInAnonymously;
+        
+        let userId = null;
+
+        // Configuración global para los Toasts (Notificaciones pequeñas)
+        const Toast = Swal.mixin({
+            toast: true,
+            position: 'top-end',
+            showConfirmButton: false,
+            timer: 3000,
+            timerProgressBar: true,
+            didOpen: (toast) => {
+                toast.addEventListener('mouseenter', Swal.stopTimer)
+                toast.addEventListener('mouseleave', Swal.resumeTimer)
+            }
+        });
+
+        /**
+         * Inicializa la autenticación y establece el listener de tickets.
+         */
+        async function initializeAuthAndDatabase() {
+            try {
+                // RECOMENDACIÓN 3: Usar el token de autenticación de la plataforma si existe.
+                const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+                if (token) {
+                    console.log("Iniciando sesión con Custom Token...");
+                    await signInWithCustomToken(auth, token);
+                } else {
+                    console.log("Iniciando sesión anónimamente...");
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Error al iniciar sesión en Firebase: ", error);
+            }
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    window.userId = userId; // Exponer el UID
+                    console.log("Usuario autenticado. UID:", userId);
+                    
+                    const userInfoSpan = document.getElementById('user-info');
+                    if (userInfoSpan) {
+                         userInfoSpan.textContent = `UID de Agente: ${window.userId}`;
+                         userInfoSpan.classList.remove('bg-gray-100', 'text-gray-700');
+                         userInfoSpan.classList.add('bg-indigo-50', 'text-indigo-700');
+                    }
+                    startListeningForTickets();
+                } else {
+                    console.log("Usuario no autenticado o cerrado sesión.");
+                }
+            });
+        }
+        // --- FIN: Bloque de Configuración de Firebase ---
+
+        /**
+         * Comienza la escucha en tiempo real de los tickets en Firestore.
+         */
+        function startListeningForTickets() {
+            if (!window.db || !window.appId || !window.userId) {
+                console.warn("Firestore o AppID no están listos. Esperando...");
+                return;
+            }
+
+            const ticketsCollectionRef = collection(db, `artifacts/${appId}/public/data/tickets`);
+            const q = query(ticketsCollectionRef);
+            
+            onSnapshot(q, (snapshot) => {
+                const fetchedTickets = [];
+                snapshot.forEach(doc => {
+                    const ticketData = doc.data();
+                    
+                    // Asegurarse de que date y notes/history existan
+                    const displayDate = ticketData.date?.toDate ? ticketData.date.toDate().toLocaleDateString('es-ES') : (typeof ticketData.date === 'string' ? ticketData.date : 'N/A');
+                    
+                    fetchedTickets.push({ 
+                        ...ticketData, 
+                        id: doc.id,
+                        date: displayDate,
+                        history: Array.isArray(ticketData.history) ? ticketData.history : [],
+                        notes: Array.isArray(ticketData.notes) ? ticketData.notes : []
+                    });
+                });
+                
+                window.allTickets = fetchedTickets; 
+                
+                // NUEVA LLAMADA: Actualizar los contadores de estadísticas
+                updateStatistics(fetchedTickets);
+                
+                window.applyFilters();
+                
+                 if (window.currentDetailTicketId && !document.getElementById('ticket-detail-modal').classList.contains('hidden')) {
+                     const updatedTicket = fetchedTickets.find(t => t.id === window.currentDetailTicketId);
+                     if (updatedTicket) {
+                         window.showTicketDetail(window.currentDetailTicketId);
+                     } else {
+                         window.hideTicketDetailModal();
+                     }
+                 }
+            }, (error) => {
+                console.error("Error al escuchar los tickets:", error);
+            });
+        }
+        
+        // Exponer funciones CRUD para la lógica principal
+        window.addNewTicket = async (newTicketData) => {
+            try {
+                // Revertido: Usar 'Usuario Final' para el historial de creación
+                newTicketData.history = [{
+                    timestamp: new Date(),
+                    status: 'Abierto',
+                    changedBy: 'Usuario Final' // Usar 'Usuario Final' como en v1
+                }];
+                newTicketData.notes = []; 
+
+                await addDoc(collection(db, `artifacts/${appId}/public/data/tickets`), newTicketData);
+                // NUEVA ALERTA DE ÉXITO
+                Swal.fire({
+                    title: '¡Ticket Enviado!',
+                    text: 'Tu solicitud ha sido registrada correctamente.',
+                    icon: 'success',
+                    confirmButtonColor: '#4f46e5' // Color indigo-600 de tu Tailwind
+                });
+            } catch (e) {
+                console.error("Error al agregar ticket: ", e);
+            }
+        };
+
+        window.updateTicketInDb = async (firestoreId, newStatus) => {
+            try {
+                const ticketRef = doc(db, `artifacts/${appId}/public/data/tickets`, firestoreId);
+                
+                // Revertido: Usar ADMIN_NAME (definido en el script principal) para el historial
+                const historyEntry = {
+                    timestamp: new Date(),
+                    status: newStatus,
+                    changedBy: window.ADMIN_NAME // Usar el nombre de admin
+                };
+
+                await updateDoc(ticketRef, {
+                    status: newStatus,
+                    history: window.arrayUnion(historyEntry) 
+                });
+                // NUEVO TOAST DE ÉXITO
+                Toast.fire({
+                    icon: 'success',
+                    title: `Estado cambiado a ${newStatus}`
+                });
+                console.log(`Estado del ticket ${firestoreId} actualizado a ${newStatus} y se añadió historial.`);
+            } catch (e) {
+                console.error("Error al actualizar el ticket: ", e);
+            }
+        };
+        
+        window.addInternalNote = async (firestoreId, noteContent) => {
+            try {
+                const ticketRef = doc(db, `artifacts/${appId}/public/data/tickets`, firestoreId);
+                
+                // Revertido: Usar ADMIN_NAME para las notas
+                const noteEntry = {
+                    timestamp: new Date(),
+                    content: noteContent,
+                    addedBy: window.ADMIN_NAME // Usar el nombre de admin
+                };
+
+                await updateDoc(ticketRef, {
+                    notes: window.arrayUnion(noteEntry) 
+                });
+                // NUEVO TOAST DE ÉXITO
+                Toast.fire({
+                    icon: 'success',
+                    title: 'Nota agregada'
+                });
+                console.log(`Nota interna agregada al ticket ${firestoreId}.`);
+            } catch (e) {
+                console.error("Error al agregar nota interna: ", e);
+            }
+        };
+        
+        window.deleteTicketInDb = async (firestoreId) => {
+            try {
+                const ticketRef = doc(db, `artifacts/${appId}/public/data/tickets`, firestoreId);
+                await deleteDoc(ticketRef);
+                // NUEVO TOAST DE ELIMINACIÓN
+                Toast.fire({
+                    icon: 'info',
+                    title: 'Ticket eliminado permanentemente'
+                });
+            } catch (e) {
+                console.error("Error al eliminar ticket: ", e);
+            }
+        };
+
+
+        initializeAuthAndDatabase();
+
+    </script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f4f7f9;
+        }
+        /* Estilos del Switch Toggle */
+        .toggle-switch input:checked + .slider {
+            background-color: #4f46e5;
+        }
+        .toggle-switch input:checked + .slider:before {
+            transform: translateX(20px);
+        }
+        /* Estilos del Modal */
+        .modal {
+            transition: opacity 0.3s ease-in-out;
+        }
+        .modal.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        /* Clase para el texto del historial/notas */
+        .history-note-text {
+            white-space: pre-wrap; /* Mantiene saltos de línea y espacios en blanco */
+        }
+        /* Estilos de Pestañas */
+        .tab-button.active {
+            border-color: #4f46e5;
+            color: #4f46e5;
+            background-color: #eef2ff;
+        }
+    </style>
+
+</head>
+<body class="min-h-screen">
+
+    <div id="app" class="container mx-auto p-4 sm:p-6 lg:p-8">
+        
+        <!-- Encabezado y Título --><header class="bg-white shadow-lg rounded-xl p-6 mb-8">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                <div class="mb-4 sm:mb-0 flex items-center">
+                    <!-- Logo de la compañía (ignorado por la selección, no editado) --><img src="https://images.vexels.com/media/users/3/137615/isolated/preview/5af2a9cbd8cd93aa90889fbc05656cb5-cubo-de-logo-abstracto-geometrico.png" alt="Handhels Valera Logo" class="h-10 w-auto mr-3">
+                    <h1 class="text-3xl font-extrabold text-gray-900 flex items-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-indigo-600 mr-3" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M10 2a8 8 0 100 16 8 8 0 000-16zM6 9a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" />
+                        </svg>
+                        Gestión de Tickets
+                    </h1>
+                </div>
+
+                <!-- Control de Modo Agente --><div class="flex items-center space-x-3 bg-gray-100 p-3 rounded-lg shadow-inner">
+                    <span class="text-sm font-medium text-gray-700">Activar Modo Administrador</span>
+                    <label class="toggle-switch relative inline-block w-10 h-6">
+                        <input type="checkbox" id="agent-mode-toggle" class="opacity-0 w-0 h-0">
+                        <span class="slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 rounded-full transition duration-400 before:absolute before:content-[''] before:h-5 before:w-5 before:left-[2px] before:bottom-[2px] before:bg-white before:rounded-full before:transition before:duration-400"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Información del Usuario (Agente/UID) --><p id="user-info" class="mt-4 text-xs font-mono bg-gray-100 text-gray-700 p-2 rounded-lg break-all">
+                Cargando UID de Agente...
+            </p>
+        </header>
+
+        <!-- Contenedor Principal: Formulario y Lista de Tickets --><div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Columna de Creación de Tickets (Izquierda/Arriba) --><div class="lg:col-span-1">
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-100 sticky top-4">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">Enviar Solicitud</h2>
+                    
+                    <form id="new-ticket-form" class="space-y-4">
+                        
+                        <!-- Nombre del Solicitante --><div>
+                            <label for="applicant-name" class="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label>
+                            <input type="text" id="applicant-name" required 
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150">
+                        </div>
+
+                        <!-- Correo Electrónico --><div>
+                            <label for="applicant-email" class="block text-sm font-medium text-gray-700 mb-1">Correo Electrónico</label>
+                            <input type="email" id="applicant-email" required 
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150">
+                        </div>
+                        
+                        <!-- NUEVO CAMPO: Departamento -->
+                        <div>
+                            <label for="applicant-department" class="block text-sm font-medium text-gray-700 mb-1">Departamento</label>
+                            <select id="applicant-department" required 
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none bg-white transition duration-150">
+                                <option value="" disabled selected>Selecciona tu departamento</option>
+                                <option value="Ventas">Ventas</option>*
+                                <option value="Administración">Administración</option>*
+                                <option value="Trafico">Trafico</option>
+                                <option value="Contabilidad">Contabilidad</option>
+                                <option value="Flexitank">Flexitank</option>*
+                                <option value="Operaciones">Operaciones</option>
+                                <option value="Facturación">Facturación</option>
+                                <option value="Cobros">Cobros</option>
+                                <option value="Recepción">Recepción</option>
+                                <option value="Aduanas DGA">Aduanas DGA</option>
+                                <option value="Almacén">Almacén</option>
+                                <option value="Tecnología">Tecnología</option>
+                                <option value="Otro">Otro</option>
+                            </select>
+                        </div>
+
+                        <!-- Asunto (SELECT) --><div>
+                            <label for="ticket-subject" class="block text-sm font-medium text-gray-700 mb-1">Asunto</label>
+                            <select id="ticket-subject" required 
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none bg-white transition duration-150">
+                                <option value="" disabled selected>Selecciona el tipo de solicitud</option>
+                                <option value="Soporte técnico">Soporte técnico</option>
+                                <option value="Solicitud de equipo">Solicitud de equipo</option>
+                                <option value="Solicitud de video">Solicitud de video</option>
+                                <option value="Reporte claro">Reporte claro</option>
+                                <option value="Otras">Otras</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label for="ticket-description" class="block text-sm font-medium text-gray-700 mb-1">Descripción del Problema</label>
+                            <textarea id="ticket-description" rows="4" required 
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"></textarea>
+                        </div>
+                        
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label for="ticket-priority" class="block text-sm font-medium text-gray-700 mb-1">Prioridad</label>
+                                <select id="ticket-priority" required
+                                    class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none bg-white transition duration-150">
+                                    <option value="Baja">Baja</option>
+                                    <option value="Media" selected>Media</option>
+                                    <option value="Alta">Alta</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="ticket-assigned-user" class="block text-sm font-medium text-gray-700 mb-1">Asignar a</label>
+                                <input type="text" id="ticket-assigned-user" value="Handhels Valera" 
+                                    class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150">
+                            </div>
+                        </div>
+
+                        <button type="submit" 
+                            class="w-full py-3 px-4 border border-transparent rounded-lg shadow-md text-base font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150 transform hover:scale-[1.01] active:scale-[0.99]">
+                            Enviar Ticket
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Columna de Lista de Tickets (Derecha/Abajo) --><div class="lg:col-span-2">
+                
+                <!-- NUEVO: Panel de Estadísticas -->
+                <h2 class="text-2xl font-bold mb-4 text-gray-800">Estadísticas</h2>
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                    <!-- Tarjeta Total -->
+                    <div class="bg-white p-5 rounded-xl shadow-lg border border-gray-100">
+                        <p class="text-sm font-medium text-gray-500">Tickets Totales</p>
+                        <p id="stat-total" class="text-3xl font-extrabold text-indigo-600 mt-1">0</p>
+                    </div>
+                    <!-- Tarjeta Abiertos -->
+                    <div class="bg-white p-5 rounded-xl shadow-lg border border-gray-100">
+                        <p class="text-sm font-medium text-gray-500">Abiertos</p>
+                        <p id="stat-open" class="text-3xl font-extrabold text-red-600 mt-1">0</p>
+                    </div>
+                    <!-- Tarjeta En Progreso -->
+                    <div class="bg-white p-5 rounded-xl shadow-lg border border-gray-100">
+                        <p class="text-sm font-medium text-gray-500">En Progreso</p>
+                        <p id="stat-progress" class="text-3xl font-extrabold text-blue-600 mt-1">0</p>
+                    </div>
+                    <!-- Tarjeta Cerrados -->
+                    <div class="bg-white p-5 rounded-xl shadow-lg border border-gray-100">
+                        <p class="text-sm font-medium text-gray-500">Cerrados</p>
+                        <p id="stat-closed" class="text-3xl font-extrabold text-green-600 mt-1">0</p>
+                    </div>
+                </div>
+
+                <!-- Lista de Tickets y Filtros -->
+                <h2 class="text-2xl font-bold mb-4 text-gray-800">Tickets (<span id="ticket-count">0</span>)</h2>
+                
+                <!-- NUEVO: Barra de Búsqueda -->
+                <div class="mb-4">
+                    <input type="text" id="filter-search" oninput="applyFilters()"
+                        class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+                        placeholder="Buscar por solicitante, asunto, descripción o ID...">
+                </div>
+                
+                <!-- Barra de Filtros --><div class="bg-white p-4 rounded-xl shadow-inner mb-4 flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-4 items-stretch sm:items-center">
+                    
+                    <!-- Filtro por Estado --><select id="filter-status" onchange="applyFilters()" 
+                        class="flex-1 p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none bg-white text-sm">
+                        <option value="Todos">Filtrar por Estado: Todos</option>
+                        <option value="Abierto">Abierto</option>
+                        <option value="En Progreso">En Progreso</option>
+                        <option value="Cerrado">Cerrado</option>
+                    </select>
+
+                    <!-- Filtro por Prioridad --><select id="filter-priority" onchange="applyFilters()" 
+                        class="flex-1 p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none bg-white text-sm">
+                        <option value="Todas">Filtrar por Prioridad: Todas</option>
+                        <option value="Alta">Alta</option>
+                        <option value="Media">Media</option>
+                        <option value="Baja">Baja</option>
+                    </select>
+
+                    <!-- NUEVO: Filtro por Departamento -->
+                    <select id="filter-department" onchange="applyFilters()" 
+                        class="flex-1 p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none bg-white text-sm">
+                        <option value="Todos">Filtrar por Depto: Todos</option>
+                        <option value="Ventas">Ventas</option>
+                        <option value="Administración">Administración</option>
+                        <option value="Trafico">Trafico</option>
+                        <option value="Contabilidad">Contabilidad</option>
+                        <option value="Flexitank">Flexitank</option>
+                        <option value="Operaciones">Operaciones</option>
+                        <option value="Facturación">Facturación</option>
+                        <option value="Cobros">Cobros</option>
+                        <option value="Recepción">Recepción</option>
+                        <option value="Aduanas DGA">Aduanas DGA</option>
+                        <option value="Almacén">Almacén</option>
+                        <option value="Otro">Otro</option>
+                    </select>
+
+                    <!-- Botón de Restablecer --><button onclick="resetFilters()" 
+                        class="px-4 py-2 bg-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-300 transition duration-150">
+                        Restablecer
+                    </button>
+                </div>
+
+                <div id="ticket-list" class="space-y-4">
+                    <!-- Los tickets se renderizarán aquí --></div>
+
+                <!-- Mensaje de tickets vacíos --><div id="empty-state" class="hidden text-center p-8 bg-white rounded-xl shadow border border-gray-100 mt-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                    </svg>
+                    <h3 class="mt-2 text-sm font-medium text-gray-900">No hay tickets</h3>
+                    <p class="mt-1 text-sm text-gray-500">Comienza creando tu primer solicitud en el formulario de la izquierda.</p>
+                </div>
+
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal de Contraseña (Revertido a Contraseña) -->
+    <div id="password-modal" class="modal hidden fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-70" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+        <div class="bg-white rounded-xl overflow-hidden shadow-2xl transform transition-all sm:max-w-lg w-full p-6">
+            <div class="sm:flex sm:items-start">
+                <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-indigo-100 sm:mx-0 sm:h-10 sm:w-10">
+                    <svg class="h-6 w-6 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+                    </svg>
+                </div>
+                <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900" id="modal-title">
+                        Acceso de Administrador Requerido
+                    </h3>
+                    <div class="mt-2">
+                        <p class="text-sm text-gray-500">
+                            Introduce tu correo y contraseña de administrador para habilitar la gestión de tickets.
+                        </p>
+                        <input type="email" id="admin-email-input" 
+                            class="mt-4 w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+                            placeholder="Correo electrónico">
+                            
+                        <input type="password" id="admin-password-input" 
+                            class="mt-4 w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+                            placeholder="Contraseña">
+                            
+                        <p id="password-error" class="text-red-500 text-xs mt-2 hidden">Credenciales incorrectas. Inténtalo de nuevo.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
+                <button type="button" id="confirm-password-btn"
+                    class="w-full inline-flex justify-center rounded-lg border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:ml-3 sm:w-auto sm:text-sm transition duration-150">
+                    Confirmar
+                </button>
+                <button type="button" id="cancel-password-btn"
+                    class="mt-3 w-full inline-flex justify-center rounded-lg border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none sm:mt-0 sm:w-auto sm:text-sm transition duration-150">
+                    Cancelar
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal de Detalle de Ticket --><div id="ticket-detail-modal" data-ticket-id="" class="modal hidden fixed inset-0 z-50 overflow-y-auto flex items-center justify-center bg-gray-900 bg-opacity-70" role="dialog" aria-modal="true">
+        <div class="bg-white rounded-xl shadow-2xl transform transition-all sm:my-8 sm:w-full sm:max-w-4xl max-h-[90vh] overflow-hidden">
+            <!-- Contenido del Modal --><div class="p-6">
+                <!-- Encabezado del Ticket --><div class="flex justify-between items-start border-b pb-4 mb-4">
+                    <h2 id="detail-subject" class="text-2xl font-extrabold text-gray-900 flex-1 break-words mr-4"></h2>
+                    <span id="detail-status-badge" class="px-3 py-1 text-sm font-semibold rounded-full min-w-[100px] text-center"></span>
+                    <button onclick="hideTicketDetailModal()" class="text-gray-400 hover:text-gray-600 ml-4">
+                        <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                </div>
+
+                <!-- Detalles y Pestañas --><div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- Columna de Detalles (1/3) --><div class="lg:col-span-1 border-r pr-6">
+                        <h3 class="text-lg font-bold mb-3 text-indigo-700">Información General</h3>
+                        <div class="space-y-2 text-sm text-gray-700">
+                            <p><strong>ID:</strong> <span id="detail-id" class="font-mono text-gray-600 text-xs"></span></p>
+                            <p><strong>Fecha:</strong> <span id="detail-date"></span></p>
+                            <p><strong>Prioridad:</strong> <span id="detail-priority" class="font-semibold"></span></p>
+                            <p><strong>Solicitante:</strong> <span id="detail-applicant-name"></span></p>
+                            <p><strong>Email:</strong> <span id="detail-applicant-email"></span></p>
+                            <!-- CAMPO AÑADIDO: Departamento -->
+                            <p><strong>Departamento:</strong> <span id="detail-applicant-department"></span></p>
+                            <p><strong>Asignado:</strong> <span id="detail-assigned-user"></span></p>
+                        </div>
+                        
+                        <h3 class="text-lg font-bold mt-6 mb-3 text-indigo-700">Descripción Completa</h3>
+                        <p id="detail-description" class="text-sm text-gray-800 history-note-text bg-gray-50 p-3 rounded-lg"></p>
+                        
+                        <!-- Delete Button (Solo visible si Admin Mode está activo) --><div id="delete-ticket-section" class="mt-6 hidden">
+                            <button onclick="showDeleteConfirmation(document.getElementById('ticket-detail-modal').getAttribute('data-ticket-id'))"
+                                class="w-full py-2 px-4 rounded-lg text-sm font-medium text-white bg-red-600 hover:bg-red-700 transition duration-150">
+                                Eliminar Ticket (Admin)
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Columna de Historial/Notas (2/3) --><div class="lg:col-span-2">
+                        <!-- Botones de Pestaña --><div class="border-b mb-4 flex">
+                            <button id="tab-history-btn" onclick="switchDetailTab('history')" class="tab-button active px-4 py-2 text-sm font-medium border-b-2 border-transparent hover:border-indigo-500 transition duration-150">
+                                Historial de Estados
+                            </button>
+                            <button id="tab-notes-btn" onclick="switchDetailTab('notes')" class="tab-button px-4 py-2 text-sm font-medium border-b-2 border-transparent hover:border-indigo-500 transition duration-150">
+                                Notas Internas
+                            </button>
+                        </div>
+
+                        <!-- Contenido de Pestañas --><div id="tab-content-history" class="tab-content space-y-4">
+                            <!-- Aquí se renderizará el Historial --></div>
+
+                        <div id="tab-content-notes" class="tab-content hidden">
+                            <div id="notes-list" class="space-y-4 mb-6">
+                                <!-- Aquí se renderizarán las Notas --></div>
+                            
+                            <!-- Formulario de Notas (Solo Administrador) --><div id="add-note-section" class="border-t pt-4 mt-4 hidden">
+                                <h4 class="font-semibold mb-2 text-gray-800">Añadir Nota Interna</h4>
+                                <form id="add-note-form" class="space-y-3">
+                                    <textarea id="note-content-input" rows="3" required placeholder="Escribe tu nota..."
+                                        class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"></textarea>
+                                    <button type="submit" 
+                                        class="w-full py-2 px-4 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700 transition duration-150">
+                                        Guardar Nota
+                                    </button>
+                                </form>
+                            </div>
+                            <p id="notes-admin-required" class="text-sm text-red-500 italic mt-4 text-center hidden">Solo el Administrador puede añadir notas.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Confirmación de Eliminación (OCULTO POR DEFECTO) --><div id="delete-confirmation-modal" class="modal hidden fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-70" aria-labelledby="delete-title" role="dialog" aria-modal="true">
+        <div class="bg-white rounded-xl overflow-hidden shadow-2xl transform transition-all sm:max-w-lg w-full p-6">
+            <div class="sm:flex sm:items-start">
+                <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
+                    <svg class="h-6 w-6 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                </div>
+                <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900" id="delete-title">
+                        Confirmar Eliminación
+                    </h3>
+                    <div class="mt-2">
+                        <p class="text-sm text-gray-500">
+                            ¿Estás absolutamente seguro de que deseas eliminar el ticket <strong id="delete-ticket-subject"></strong>? Esta acción es permanente y no se puede deshacer.
+                        </p>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
+                <button type="button" id="confirm-delete-btn"
+                    class="w-full inline-flex justify-center rounded-lg border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:ml-3 sm:w-auto sm:text-sm transition duration-150">
+                    Eliminar Permanentemente
+                </button>
+                <button type="button" onclick="hideDeleteConfirmation()"
+                    class="mt-3 w-full inline-flex justify-center rounded-lg border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none sm:mt-0 sm:w-auto sm:text-sm transition duration-150">
+                    Cancelar
+                </button>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        // --- Lógica del Sistema de Tickets (Lado Cliente/Compartido) ---
+
+        // ESTADO INICIAL
+        window.allTickets = [];
+        window.tickets = []; 
+        window.isAgentMode = false; 
+        window.currentDetailTicketId = null; 
+        window.ticketToDeleteId = null; 
+        
+        // Revertido: Usar Contraseña codificada y Nombre
+        // const ADMIN_PASSWORD = 'HandhelsV21,';
+        const ADMIN_NAME = 'Handhels Valera';
+        window.ADMIN_NAME = ADMIN_NAME;
+
+        let ticketListContainer;
+        let ticketCountSpan;
+        let emptyStateDiv;
+        let agentModeToggle;
+        let passwordModal;
+        let passwordInput;
+        let passwordError;
+        let filterStatusSelect;
+        let filterPrioritySelect;
+        let filterDepartmentSelect; // NUEVA VARIABLE
+        let filterSearchInput; // NUEVA VARIABLE
+        let detailModal;
+        let notesAdminRequired;
+        let deleteTicketSection;
+        let deleteConfirmationModal;
+        let deleteTicketSubjectSpan;
+        
+        // NUEVAS VARIABLES PARA ESTADÍSTICAS
+        let statTotalSpan, statOpenSpan, statProgressSpan, statClosedSpan;
+        
+        // 1. Funciones de Utilidad
+        
+        /**
+         * Retorna las clases de color de Tailwind para un estado dado.
+         */
+        function getStatusClasses(status) {
+            switch (status) {
+                case 'Abierto':
+                    return { bg: 'bg-red-100', text: 'text-red-800', badge: 'bg-red-500', base: 'text-red-600' };
+                case 'En Progreso':
+                    return { bg: 'bg-blue-100', text: 'text-blue-800', badge: 'bg-blue-500', base: 'text-blue-600' };
+                case 'Cerrado':
+                    return { bg: 'bg-green-100', text: 'text-green-800', badge: 'bg-green-500', base: 'text-green-600' };
+                default:
+                    return { bg: 'bg-gray-100', text: 'text-gray-800', badge: 'bg-gray-500', base: 'text-gray-600' };
+            }
+        }
+
+        /**
+         * Retorna las clases de color de Tailwind para una prioridad dada.
+         */
+        function getPriorityClasses(priority) {
+            switch (priority) {
+                case 'Alta':
+                    return 'text-red-600 font-bold';
+                case 'Media':
+                    return 'text-yellow-600 font-semibold';
+                case 'Baja':
+                    return 'text-green-600';
+                default:
+                    return 'text-gray-500';
+            }
+        }
+
+        /**
+         * Alterna el modo Agente con chequeo de contraseña si se activa.
+         */
+        async function handleToggleChange() {
+            if (agentModeToggle.checked) {
+                showPasswordModal();
+            } else {
+                window.isAgentMode = false;
+                
+                // Cerramos sesión de admin y volvemos a anónimo
+                try {
+                    await window.signOut(window.auth);
+                    await window.signInAnonymously(window.auth);
+                } catch (e) {
+                    console.error("Error al salir del modo admin:", e);
+                }
+
+                window.renderTicketList();
+                if (!detailModal.classList.contains('hidden')) {
+                     const ticketId = detailModal.getAttribute('data-ticket-id');
+                     if (ticketId) window.showTicketDetail(ticketId);
+                }
+            }
+        }
+
+        function showPasswordModal() {
+            passwordModal.classList.remove('hidden');
+            passwordInput.value = '';
+            passwordError.classList.add('hidden');
+            passwordInput.focus();
+        }
+
+        function hidePasswordModal() {
+            passwordModal.classList.add('hidden');
+        }
+
+        async function verifyPassword() {
+            const emailInput = document.getElementById('admin-email-input');
+            const email = emailInput.value.trim();
+            const password = passwordInput.value;
+            
+            try {
+                // Autenticar llamando a las funciones expuestas en window
+                await window.signInWithEmailAndPassword(window.auth, email, password);
+                
+                // Éxito: Activar Modo Administrador
+                window.isAgentMode = true;
+                agentModeToggle.checked = true;
+                hidePasswordModal();
+                window.renderTicketList();
+                
+                 if (!detailModal.classList.contains('hidden')) {
+                     const ticketId = detailModal.getAttribute('data-ticket-id');
+                     if (ticketId) window.showTicketDetail(ticketId);
+                 }
+            } catch (error) {
+                // Imprimimos el error completo por si acaso
+                console.error("Error de autenticación completo:", error); 
+                passwordError.classList.remove('hidden');
+                passwordInput.value = '';
+                passwordInput.focus();
+                
+                window.isAgentMode = false; 
+                agentModeToggle.checked = false; 
+                window.renderTicketList();
+            }
+        }
+
+        // --- NUEVA FUNCIÓN: Lógica de Estadísticas ---
+
+        /**
+         * Actualiza los contadores de estadísticas.
+         */
+        function updateStatistics(tickets) {
+            // Guard clause si los elementos no están listos
+            if (!statTotalSpan || !statOpenSpan || !statProgressSpan || !statClosedSpan) {
+                return;
+            }
+
+            const total = tickets.length;
+            const open = tickets.filter(t => t.status === 'Abierto').length;
+            const progress = tickets.filter(t => t.status === 'En Progreso').length;
+            const closed = tickets.filter(t => t.status === 'Cerrado').length;
+
+            statTotalSpan.textContent = total;
+            statOpenSpan.textContent = open;
+            statProgressSpan.textContent = progress;
+            statClosedSpan.textContent = closed;
+        }
+
+
+        // --- Lógica de Filtrado ---
+
+        window.applyFilters = function() {
+            const selectedStatus = filterStatusSelect.value;
+            const selectedPriority = filterPrioritySelect.value;
+            const selectedDepartment = filterDepartmentSelect.value; // NUEVA LÍNEA
+            const searchTerm = filterSearchInput.value.toLowerCase(); // NUEVA LÍNEA
+
+            let filteredTickets = window.allTickets.slice();
+
+            // NUEVO BLOQUE: Filtrar por Búsqueda
+            if (searchTerm) {
+                filteredTickets = filteredTickets.filter(ticket => {
+                    return (
+                        ticket.applicantName.toLowerCase().includes(searchTerm) ||
+                        ticket.subject.toLowerCase().includes(searchTerm) ||
+                        ticket.description.toLowerCase().includes(searchTerm) ||
+                        ticket.id.toLowerCase().includes(searchTerm)
+                    );
+                });
+            }
+
+            if (selectedStatus !== 'Todos') {
+                filteredTickets = filteredTickets.filter(ticket => ticket.status === selectedStatus);
+            }
+
+            if (selectedPriority !== 'Todas') {
+                filteredTickets = filteredTickets.filter(ticket => ticket.priority === selectedPriority);
+            }
+            
+            // NUEVO BLOQUE: Filtrar por Departamento
+            if (selectedDepartment !== 'Todos') {
+                filteredTickets = filteredTickets.filter(ticket => ticket.applicantDepartment === selectedDepartment);
+            }
+            
+            window.tickets = filteredTickets;
+            window.renderTicketList();
+        }
+
+        window.resetFilters = function() {
+            filterStatusSelect.value = 'Todos';
+            filterPrioritySelect.value = 'Todos';
+            filterDepartmentSelect.value = 'Todos'; // NUEVA LÍNEA
+            filterSearchInput.value = ''; // NUEVA LÍNEA
+            window.applyFilters();
+        }
+
+
+        // 2. Renderizado de la Lista
+
+        function renderTicket(ticket) {
+            const { bg, text } = getStatusClasses(ticket.status);
+            const priorityClass = getPriorityClasses(ticket.priority);
+
+            const nextStatus = {
+                'Abierto': 'En Progreso',
+                'En Progreso': 'Cerrado',
+                'Cerrado': 'Abierto'
+            };
+            const currentNextStatus = nextStatus[ticket.status];
+            
+            let buttonText = `Cambiar a ${currentNextStatus}`;
+            let buttonColor = 'bg-blue-600 hover:bg-blue-700';
+            
+            // Esta lógica de 'if (ticket.status === 'Cerrado')' se mueve abajo
+
+            const updateButtonHTML = window.isAgentMode ? 
+                (ticket.status === 'Cerrado' ? // <-- NUEVA LÓGICA
+                    `
+                    <div class="mt-4">
+                        <p class="text-xs text-gray-500 italic text-center py-2 border-t pt-2">Ticket cerrado permanentemente.</p>
+                    </div>
+                    ` 
+                    :
+                    `
+                    <div class="mt-4">
+                        <button onclick="event.stopPropagation(); updateTicketStatus('${ticket.id}')"
+                            class="w-full py-2 px-4 rounded-lg text-sm font-medium text-white ${buttonColor} focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-150">
+                            ${buttonText}
+                        </button>
+                    </div>
+                    `
+                )
+                : 
+                `
+                 <div class="mt-4">
+                     <p class="text-xs text-gray-500 italic text-center py-2 border-t pt-2">Botón visible solo en Modo Administrador.</p>
+                 </div>
+                `;
+            
+            const displayId = ticket.id.substring(0, 8);
+
+
+            return `
+                <div onclick="showTicketDetail('${ticket.id}')" class="ticket-card bg-white p-5 rounded-xl shadow-md border border-gray-200 transition duration-300 hover:shadow-lg cursor-pointer" data-id="${ticket.id}">
+                    <div class="flex justify-between items-start mb-3">
+                        <h3 class="text-lg font-bold text-gray-900">${ticket.subject}</h3>
+                        <span class="px-3 py-1 text-xs font-semibold rounded-full ${bg} ${text} transition duration-150">
+                            ${ticket.status}
+                        </span>
+                    </div>
+
+                    <p class="text-sm text-gray-600 mb-4 line-clamp-2">${ticket.description}</p>
+                    
+                    <div class="flex justify-between items-center text-xs text-gray-500 border-t pt-3">
+                        <div>
+                            <p class="mb-1"><strong class="text-gray-700">ID:</strong> <span class="text-gray-900">${displayId}...</span></p>
+                            <p class="mb-1"><strong class="text-gray-700">Solicitante:</strong> ${ticket.applicantName}</p>
+                            <!-- CAMPO AÑADIDO: Departamento en la tarjeta -->
+                            <p class="mb-1"><strong class="text-gray-700">Depto:</strong> ${ticket.applicantDepartment || 'N/A'}</p>
+                        </div>
+                        
+                        <div class="text-right">
+                            <p class="mb-1">Prioridad: <span class="${priorityClass}">${ticket.priority}</span></p>
+                            <p class="mb-1">Fecha: ${ticket.date}</p>
+                        </div>
+                    </div>
+                    
+                    ${updateButtonHTML}
+                </div>
+            `;
+        }
+
+        window.renderTicketList = function() {
+            if (!ticketListContainer) return;
+
+            const ticketsToRender = window.tickets || [];
+
+            const sortedTickets = ticketsToRender.slice().sort((a, b) => {
+                const statusOrder = { 'Abierto': 1, 'En Progreso': 2, 'Cerrado': 3 };
+                const priorityOrder = { 'Alta': 1, 'Media': 2, 'Baja': 3 };
+
+                if (statusOrder[a.status] !== statusOrder[b.status]) {
+                    return statusOrder[a.status] - statusOrder[b.status];
+                }
+                return priorityOrder[a.priority] - priorityOrder[b.priority];
+            });
+
+            ticketListContainer.innerHTML = sortedTickets.map(renderTicket).join('');
+            ticketCountSpan.textContent = ticketsToRender.length;
+            
+            if (ticketsToRender.length === 0) {
+                emptyStateDiv.classList.remove('hidden');
+            } else {
+                emptyStateDiv.classList.add('hidden');
+            }
+        };
+
+
+        // 3. Lógica del Modal de Detalle
+        
+        function renderHistory(ticket) {
+            const historyContainer = document.getElementById('tab-content-history');
+            const history = Array.isArray(ticket.history) ? ticket.history : [];
+            
+            if (history.length === 0) {
+                historyContainer.innerHTML = '<p class="text-sm text-gray-500 italic">No hay historial de cambios de estado para este ticket.</p>';
+                return;
+            }
+
+            const sortedHistory = history.slice().sort((a, b) => {
+                const dateA = a.timestamp?.toDate ? a.timestamp.toDate() : new Date(0);
+                const dateB = b.timestamp?.toDate ? b.timestamp.toDate() : new Date(0);
+                return dateB - dateA;
+            });
+
+            historyContainer.innerHTML = sortedHistory.map(item => {
+                const timestamp = item.timestamp?.toDate ? item.timestamp.toDate().toLocaleString('es-ES') : 'Fecha desconocida';
+                const { base } = getStatusClasses(item.status);
+                
+                // Revertido: Mostrar el nombre guardado (ej. 'Usuario Final' o 'Handhels Valera')
+                const changerDisplay = item.changedBy || 'Desconocido';
+
+                return `
+                    <div class="flex items-center space-x-3 p-3 bg-white rounded-lg shadow-sm border border-gray-100">
+                        <div class="w-2 h-2 rounded-full ${base.replace('text', 'bg')} flex-shrink-0"></div>
+                        <div class="text-sm">
+                            <p>Estado cambiado a <strong class="${base}">${item.status}</strong></p>
+                            <p class="text-xs text-gray-500 mt-0.5">Por <strong>${changerDisplay}</strong> el ${timestamp}</p>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function renderNotes(ticket) {
+            const notesContainer = document.getElementById('notes-list');
+            const notes = Array.isArray(ticket.notes) ? ticket.notes : [];
+            const addNoteSection = document.getElementById('add-note-section');
+            const notesAdminRequired = document.getElementById('notes-admin-required');
+            
+            if (window.isAgentMode) {
+                addNoteSection.classList.remove('hidden');
+                notesAdminRequired.classList.add('hidden');
+            } else {
+                addNoteSection.classList.add('hidden');
+                notesAdminRequired.classList.remove('hidden');
+            }
+
+            if (notes.length === 0) {
+                notesContainer.innerHTML = '<p class="text-sm text-gray-500 italic">Aún no hay notas internas.</p>';
+            } else {
+                const sortedNotes = notes.slice().sort((a, b) => {
+                    const dateA = a.timestamp?.toDate ? a.timestamp.toDate() : new Date(0);
+                    const dateB = b.timestamp?.toDate ? b.timestamp.toDate() : new Date(0);
+                    return dateB - dateA;
+                });
+
+                notesContainer.innerHTML = sortedNotes.map(note => {
+                    const timestamp = note.timestamp?.toDate ? note.timestamp.toDate().toLocaleString('es-ES') : 'Fecha desconocida';
+                    
+                    // Revertido: Mostrar el nombre guardado
+                    const adderDisplay = note.addedBy || 'Desconocido';
+
+                    return `
+                        <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <p class="text-sm text-gray-800 history-note-text">${note.content}</p>
+                            <p class="text-xs text-gray-500 mt-2 border-t pt-2">
+                                Añadida por <strong>${adderDisplay}</strong> el ${timestamp}
+                            </p>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+
+        window.showTicketDetail = function(ticketId) {
+            const ticket = window.allTickets.find(t => t.id === ticketId);
+            if (!ticket) {
+                console.error("Ticket no encontrado:", ticketId);
+                return;
+            }
+            
+            window.currentDetailTicketId = ticketId;
+            const { bg, text } = getStatusClasses(ticket.status);
+            const priorityClass = getPriorityClasses(ticket.priority);
+            const displayId = ticket.id.substring(0, 8);
+
+            document.getElementById('detail-subject').textContent = ticket.subject;
+            
+            const statusBadge = document.getElementById('detail-status-badge');
+            statusBadge.textContent = ticket.status;
+            statusBadge.className = `px-3 py-1 text-sm font-semibold rounded-full min-w-[100px] text-center ${bg} ${text}`;
+
+            document.getElementById('detail-id').textContent = displayId + '...';
+            document.getElementById('detail-date').textContent = ticket.date;
+            document.getElementById('detail-priority').textContent = ticket.priority;
+            document.getElementById('detail-priority').className = priorityClass;
+            document.getElementById('detail-applicant-name').textContent = ticket.applicantName;
+            document.getElementById('detail-applicant-email').textContent = ticket.applicantEmail;
+            // CAMPO AÑADIDO: Poblar departamento en modal
+            document.getElementById('detail-applicant-department').textContent = ticket.applicantDepartment || 'N/A';
+            document.getElementById('detail-assigned-user').textContent = ticket.assignedUser;
+            document.getElementById('detail-description').textContent = ticket.description;
+            
+            detailModal.setAttribute('data-ticket-id', ticketId);
+            if (window.isAgentMode) {
+                deleteTicketSection.classList.remove('hidden');
+            } else {
+                deleteTicketSection.classList.add('hidden');
+            }
+
+            switchDetailTab('history');
+            renderHistory(ticket);
+            renderNotes(ticket); 
+
+            detailModal.classList.remove('hidden');
+        };
+
+        window.showDeleteConfirmation = function(ticketId) {
+            window.ticketToDeleteId = ticketId;
+            const ticket = window.allTickets.find(t => t.id === ticketId);
+            
+            if (ticket) {
+                deleteTicketSubjectSpan.textContent = `"${ticket.subject}"`;
+                deleteConfirmationModal.classList.remove('hidden');
+                hideTicketDetailModal();
+            } else {
+                console.error("No se puede confirmar la eliminación: Ticket no encontrado.");
+            }
+        }
+
+        window.hideDeleteConfirmation = function() {
+            deleteConfirmationModal.classList.add('hidden');
+            window.ticketToDeleteId = null;
+        }
+
+
+        window.hideTicketDetailModal = function() {
+            detailModal.classList.add('hidden');
+            window.currentDetailTicketId = null;
+        };
+
+        window.switchDetailTab = function(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
+
+            document.getElementById(`tab-content-${tabName}`).classList.remove('hidden');
+            document.getElementById(`tab-${tabName}-btn`).classList.add('active');
+        };
+
+        // 4. Lógica de Eventos
+
+        document.getElementById('new-ticket-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const applicantName = document.getElementById('applicant-name').value.trim();
+            const applicantEmail = document.getElementById('applicant-email').value.trim();
+            // CAMPO AÑADIDO: Leer departamento
+            const applicantDepartment = document.getElementById('applicant-department').value;
+            const subject = document.getElementById('ticket-subject').value;
+            const description = document.getElementById('ticket-description').value.trim();
+            const priority = document.getElementById('ticket-priority').value;
+            const assignedUser = document.getElementById('ticket-assigned-user').value.trim() || 'No Asignado';
+
+            if (!subject || subject === "" || !description || !applicantName || !applicantEmail || !applicantDepartment) {
+                console.error("Todos los campos obligatorios deben ser llenados.");
+                return;
+            }
+            
+            const newTicketData = {
+                applicantName: applicantName,
+                applicantEmail: applicantEmail,
+                applicantDepartment: applicantDepartment, // CAMPO AÑADIDO: Guardar en DB
+                subject: subject,
+                description: description,
+                status: 'Abierto', 
+                priority: priority,
+                assignedUser: assignedUser,
+                date: new Date(),
+            };
+
+            window.addNewTicket(newTicketData);
+
+            this.reset();
+            // CAMPO AÑADIDO: Resetear selects
+            document.getElementById('ticket-subject').value = "";
+            document.getElementById('applicant-department').value = "";
+            document.getElementById('ticket-priority').value = "Media";
+            document.getElementById('ticket-assigned-user').value = "Handhels Valera";
+        });
+        
+        document.getElementById('add-note-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            if (!window.isAgentMode) {
+                console.error("Error: No tienes permisos para agregar notas. Activa el Modo Administrador.");
+                return;
+            }
+
+            const ticketId = detailModal.getAttribute('data-ticket-id');
+            const noteContent = document.getElementById('note-content-input').value.trim();
+
+            if (noteContent && ticketId) {
+                window.addInternalNote(ticketId, noteContent);
+                document.getElementById('note-content-input').value = '';
+            } else {
+                 console.error("Contenido de nota o ID de ticket no válido.");
+            }
+        });
+        
+         document.getElementById('confirm-delete-btn').addEventListener('click', () => {
+             if (window.ticketToDeleteId) {
+                 window.deleteTicketInDb(window.ticketToDeleteId);
+                 window.hideDeleteConfirmation();
+             }
+         });
+
+
+        window.updateTicketStatus = function(firestoreId) {
+            event.stopPropagation();
+
+            if (!window.isAgentMode) {
+                agentModeToggle.checked = false; 
+                window.renderTicketList();
+                showPasswordModal();
+                return;
+            }
+
+            const ticket = window.allTickets.find(t => t.id === firestoreId);
+
+            if (ticket) {
+                
+                // NUEVA LÓGICA: Si el ticket está cerrado, no hacer nada.
+                if (ticket.status === 'Cerrado') {
+                    console.log("Acción bloqueada: Los tickets cerrados no se pueden reabrir.");
+                    return;
+                }
+
+                let newStatus;
+                
+                switch (ticket.status) {
+                    case 'Abierto':
+                        newStatus = 'En Progreso';
+                        break;
+                    case 'En Progreso':
+                        newStatus = 'Cerrado';
+                        break;
+                    // 'case Cerrado' se elimina para prevenir reapertura
+                    default:
+                        newStatus = 'Abierto'; // Fallback
+                }
+                
+                window.updateTicketInDb(firestoreId, newStatus);
+            }
+        };
+
+        // 5. Inicialización del DOM y Carga de Datos
+        window.onload = function() {
+            ticketListContainer = document.getElementById('ticket-list');
+            ticketCountSpan = document.getElementById('ticket-count');
+            emptyStateDiv = document.getElementById('empty-state');
+            agentModeToggle = document.getElementById('agent-mode-toggle');
+            filterStatusSelect = document.getElementById('filter-status');
+            filterPrioritySelect = document.getElementById('filter-priority');
+            filterDepartmentSelect = document.getElementById('filter-department'); // NUEVA LÍNEA
+            filterSearchInput = document.getElementById('filter-search'); // NUEVA LÍNEA
+            
+            passwordModal = document.getElementById('password-modal');
+            passwordInput = document.getElementById('admin-password-input');
+            passwordError = document.getElementById('password-error');
+            
+            detailModal = document.getElementById('ticket-detail-modal');
+            notesAdminRequired = document.getElementById('notes-admin-required');
+            deleteTicketSection = document.getElementById('delete-ticket-section'); 
+            
+            deleteConfirmationModal = document.getElementById('delete-confirmation-modal');
+            deleteTicketSubjectSpan = document.getElementById('delete-ticket-subject');
+            
+            // NUEVA INICIALIZACIÓN: Referencias a spans de estadísticas
+            statTotalSpan = document.getElementById('stat-total');
+            statOpenSpan = document.getElementById('stat-open');
+            statProgressSpan = document.getElementById('stat-progress');
+            statClosedSpan = document.getElementById('stat-closed');
+
+
+            agentModeToggle.addEventListener('change', handleToggleChange);
+            document.getElementById('confirm-password-btn').addEventListener('click', verifyPassword);
+            
+            document.getElementById('cancel-password-btn').addEventListener('click', () => {
+                window.isAgentMode = false;
+                agentModeToggle.checked = false;
+                hidePasswordModal();
+                window.renderTicketList();
+            });
+
+            passwordInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    verifyPassword();
+                }
+            });
+            
+             detailModal.addEventListener('click', (e) => {
+                 if (e.target === detailModal) {
+                     hideTicketDetailModal();
+                 }
+             });
+
+             deleteConfirmationModal.addEventListener('click', (e) => {
+                 if (e.target === deleteConfirmationModal) {
+                     hideDeleteConfirmation();
+                 }
+             });
+
+            agentModeToggle.checked = window.isAgentMode;
+            
+            if (window.userId) {
+                const userInfoSpan = document.getElementById('user-info');
+                if (userInfoSpan) {
+                     userInfoSpan.textContent = `UID de Agente: ${window.userId}`;
+                     userInfoSpan.classList.remove('bg-gray-100', 'text-gray-700');
+                     userInfoSpan.classList.add('bg-indigo-50', 'text-indigo-700');
+                }
+            }
+        };
+    </script>
+</body>
+</html>
