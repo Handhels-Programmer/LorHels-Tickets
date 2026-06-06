@@ -1,57 +1,37 @@
 # LorHels Tickets
 
-1. Arquitectura y Tecnologías
-Front-end Estático: Un único archivo HTML (index.html) que contiene todo: estructura, estilos y lógica. Es muy fácil de desplegar en cualquier lado.
+## LorHels Tickets: Arquitectura y Funcionalidades Principales
 
-Estilos y UI:
+**LorHels Tickets** es una aplicación web de página única (SPA) diseñada para la gestión de solicitudes de soporte técnico en tiempo real. Combina un diseño moderno y responsivo con un backend serverless, garantizando velocidad y seguridad.
 
-Tailwind CSS (vía CDN): Utilizado para todo el diseño responsivo (se adapta a móviles y escritorio).
+### 1. Stack Tecnológico
 
-Tema Oscuro (Dark Mode): Implementamos un diseño basado en tonos slate (grises azulados oscuros) con acentos en blue (azul) para botones y enlaces, dándole un aspecto moderno de panel de control (dashboard).
+* **Frontend Estático:** HTML5 y Vanilla JavaScript (ES6+), operando sin depender de frameworks complejos.
+* **Motor de Estilos:** Tailwind CSS configurado con un tema oscuro profesional (paleta *Slate* y *Blue*).
+* **Iconografía e Interfaz:** Lucide Icons para la representación gráfica minimalista y SweetAlert2 para notificaciones emergentes (toasts) y modales de confirmación interactivos.
+* **Backend (BaaS):** Firebase SDK (v12.4.0).
+* **Base de Datos:** Cloud Firestore, utilizando listeners (`onSnapshot`) para sincronización bidireccional en tiempo real.
+* **Autenticación:** Firebase Auth, implementando un sistema híbrido de sesiones anónimas (para creadores de tickets) y credenciales de correo/contraseña (para gestión administrativa).
 
-Iconografía: Integración de Lucide Icons (<i data-lucide="..."></i>) para iconos limpios y consistentes en toda la interfaz.
 
-Notificaciones: Uso de SweetAlert2 para modales emergentes y "toasts" (notificaciones pequeñas en la esquina) que confirman acciones sin ser invasivos.
 
-Back-end y Base de Datos:
+### 2. Experiencia del Usuario Final (Cliente/Empleado)
 
-Firebase SDK: Conectado directamente desde el navegador.
+* **Generación de Solicitudes:** Formulario intuitivo que captura nombre, correo electrónico, departamento (Ventas, Administración, Tráfico, etc.), asunto, descripción detallada y nivel de prioridad.
+* **Panel de Control en Vivo:** Lista centralizada de tickets que se renderiza y actualiza instantáneamente en todos los clientes conectados sin necesidad de recargar la página.
+* **Filtros y Búsqueda Avanzada:** Barra de texto unificada para buscar por ID, nombre del solicitante o contenido, complementada con menús desplegables para aislar tickets por Estado, Prioridad y Departamento.
+* **Dashboard Estadístico:** Tarjetas de métricas dinámicas en la parte superior que reflejan el volumen total de operaciones y su distribución actual (Abiertos, En Progreso, Cerrados).
 
-Firestore: Base de datos NoSQL en tiempo real (onSnapshot). Los cambios que haces se reflejan instantáneamente en la pantalla sin tener que recargar.
+### 3. Módulo de Administración (Agente)
 
-Firebase Authentication: Manejo de sesiones (anónimas para usuarios normales y con correo/contraseña para el administrador).
+* **Acceso Protegido:** Un interruptor de "Modo Administrador" en la cabecera que despliega un modal de autenticación segura enlazado a Firebase Auth.
+* **Gestión del Ciclo de Vida:** Controles de un solo clic para avanzar el estado operativo del ticket (Abierto $\rightarrow$ En Progreso $\rightarrow$ Cerrado).
+* **Auditoría e Historial:** Registro inmutable, integrado en el modal de detalles, que documenta qué usuario modificó un estado y en qué momento exacto (con formato local).
+* **Colaboración Interna:** Capacidad de agregar "Notas Internas" privadas (visibles de forma exclusiva bajo la sesión de administrador), selladas con el nombre del agente y la marca de tiempo.
+* **Depuración de Datos:** Función de eliminación permanente de registros en Firestore, protegida por una barrera de confirmación visual para prevenir borrados accidentales.
 
-2. Funcionalidades Principales
-A. Para el Usuario Final (Cliente/Empleado)
-Creación de Tickets: Un formulario a la izquierda donde ingresan su nombre, correo, departamento (Ventas, Administración, etc.), asunto, descripción y prioridad.
+### 4. Seguridad e Integridad de Datos
 
-Vista de Tickets: Una lista central donde pueden ver todos los tickets creados, su estado actual y quién los está atendiendo.
-
-Búsqueda y Filtros: Pueden buscar tickets específicos usando una barra de texto, o usar menús desplegables para filtrar por Estado, Prioridad o Departamento.
-
-B. Para el Administrador (Modo Agente)
-Acceso Seguro: Un interruptor (switch) en la esquina superior derecha que, al activarse, lanza un modal de SweetAlert2 pidiendo correo y contraseña de Firebase.
-
-Gestión de Estados: Una vez autenticado, los tickets muestran un botón para avanzar su estado (De "Abierto" a "En Progreso", y luego a "Cerrado").
-
-Detalles Extendidos: Al hacer clic en un ticket, se abre un modal con toda la información. El administrador tiene acceso a una pestaña de "Notas Internas" donde puede escribir comentarios que se guardan con su nombre y fecha.
-
-Eliminación Segura: Capacidad para borrar permanentemente un ticket. Esto incluye una confirmación de seguridad (vía SweetAlert2) para evitar borrados accidentales.
-
-Historial de Cambios: Una pestaña que registra cada vez que un ticket cambia de estado, guardando quién hizo el cambio y cuándo.
-
-3. Estadísticas en Tiempo Real
-Un panel superior con 4 tarjetas que se actualizan solas mostrando:
-
-Total de tickets.
-
-Tickets Abiertos (en rojo).
-
-Tickets En Progreso (en amarillo).
-
-Tickets Cerrados (en verde).
-
-4. Seguridad
-Reglas de Firestore (Configuradas en la consola): Implementamos reglas estrictas donde cualquier persona puede leer o crear un ticket, pero solo la cuenta con el UID del administrador (tu cuenta) tiene permisos para modificar estados, agregar notas o eliminar documentos en la base de datos.
-
-Sin contraseñas en el código: Eliminamos la contraseña que estaba escrita directamente en el JavaScript, pasando toda la responsabilidad de seguridad al sistema de Firebase Auth.
+* **Reglas de Firestore en la Nube:** Los usuarios estándar (sesión anónima) poseen privilegios exclusivos de lectura y creación. Únicamente el UID criptográfico específico del administrador cuenta con permisos de actualización (estados/notas) y eliminación en el servidor.
+* **Protección de Interfaz (Cliente):** Lógica condicional en JavaScript que oculta proactivamente botones destructivos, opciones de estado y formularios de notas si la sesión validada de administrador no se encuentra activa.
+* **Diseño Interactivo y Limpio:** Elementos estructurales como el ID del documento se truncan visualmente y los datos de conexión se manejan en segundo plano, finalizando con un pie de página corporativo enlazado directamente a LorHels Systems.
