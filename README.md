@@ -1,6 +1,6 @@
 # LorHels Tickets
 
-## LorHels Tickets: Arquitectura y Funcionalidades Principales
+## Arquitectura y Funcionalidades Principales
 
 **LorHels Tickets** es una aplicación web de página única (SPA) diseñada para la gestión de solicitudes de soporte técnico en tiempo real. Combina un diseño moderno y responsivo con un backend serverless, garantizando velocidad y seguridad.
 
